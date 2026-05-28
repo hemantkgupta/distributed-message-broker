@@ -1,0 +1,25 @@
+rootProject.name = 'distributed-message-broker'
+
+// Foundation — shared records and types
+include 'broker-common'
+
+// Storage tier — segmented append-only logs, sparse offset index
+include 'broker-storage'
+
+// Control plane — replica state machine, ISR, leader epochs
+include 'broker-replica'
+
+// Network plane — NIO sockets, zero-copy transferTo, delayed requests
+include 'broker-network'
+
+// Control plane — consumer group coordinator + offsets store
+include 'broker-coordinator'
+
+// Control plane — embedded KRaft-style metadata log
+include 'broker-metadata'
+
+// Edge — batching producer + pull-based consumer
+include 'broker-client'
+
+// Cross-cutting — chaos simulator and end-to-end cluster harness
+include 'broker-simulator'

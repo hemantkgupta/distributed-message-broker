@@ -1,0 +1,124 @@
+allprojects {
+    group = 'com.hkg.distributedmessagebroker'
+    version = '0.1.0-SNAPSHOT'
+
+    repositories {
+        mavenCentral()
+    }
+}
+
+subprojects {
+    apply plugin: 'java-library'
+
+    java {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    dependencies {
+        testImplementation platform('org.junit:junit-bom:5.10.2')
+        testImplementation 'org.junit.jupiter:junit-jupiter'
+        testImplementation 'org.assertj:assertj-core:3.25.3'
+        testRuntimeOnly  'org.junit.platform:junit-platform-launcher'
+    }
+
+    test {
+        useJUnitPlatform()
+    }
+
+    compileJava.options.encoding     = 'UTF-8'
+    compileTestJava.options.encoding = 'UTF-8'
+}
+
+// === Module dependency graph ===
+//
+//   broker-common  (records, value types, framing primitives)
+//        ▲
+//        │
+//   broker-storage  (segmented log, sparse index, page-cache writes)
+//        ▲
+//        │
+//   broker-replica  (PartitionReplica, ISR, HWM, LeaderEpochTracker)
+//        ▲                                ▲
+//        │                                │
+//   broker-coordinator             broker-metadata
+//   (consumer-group)               (KRaft sim)
+//        ▲                                ▲
+//        │                                │
+//        └───────────┬────────────────────┘
+//                    ▼
+//             broker-network
+//             (NIO + zero-copy)
+//                    ▲
+//                    │
+//             broker-client
+//             (producer + consumer)
+//                    ▲
+//                    │
+//             broker-simulator
+//             (cluster harness + chaos)
+//
+// Foundation
+project(':broker-common') {
+}
+
+// Storage tier
+project(':broker-storage') {
+    dependencies {
+        api project(':broker-common')
+    }
+}
+
+// Replica state machine
+project(':broker-replica') {
+    dependencies {
+        api project(':broker-common')
+        implementation project(':broker-storage')
+    }
+}
+
+// Network plane — sits above replica + coordinator so it can wire requests
+project(':broker-network') {
+    dependencies {
+        api project(':broker-common')
+        implementation project(':broker-storage')
+        implementation project(':broker-replica')
+    }
+}
+
+// Consumer-group coordinator
+project(':broker-coordinator') {
+    dependencies {
+        api project(':broker-common')
+        implementation project(':broker-storage')
+    }
+}
+
+// KRaft metadata plane
+project(':broker-metadata') {
+    dependencies {
+        api project(':broker-common')
+        implementation project(':broker-storage')
+    }
+}
+
+// Producer + consumer client
+project(':broker-client') {
+    dependencies {
+        api project(':broker-common')
+        implementation project(':broker-network')
+    }
+}
+
+// Simulator / cluster harness
+project(':broker-simulator') {
+    dependencies {
+        api project(':broker-common')
+        implementation project(':broker-storage')
+        implementation project(':broker-replica')
+        implementation project(':broker-network')
+        implementation project(':broker-coordinator')
+        implementation project(':broker-metadata')
+        implementation project(':broker-client')
+    }
+}
