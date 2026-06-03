@@ -11,7 +11,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
 
@@ -37,16 +39,24 @@ public final class Log implements AutoCloseable {
     private final long segmentMillis;
     private final int indexIntervalBytes;
     private final List<LogSegment> sealedSegments = new ArrayList<>();
+    private final Map<Offset, RemoteSegmentMetadata> remoteSegments = new LinkedHashMap<>();
+    private RemoteStorageManager remoteStorage;
     private LogSegment active;
     private long activeOpenedAtMs;
 
     public Log(PartitionId partitionId, Path dir, int segmentBytes, long segmentMillis,
                int indexIntervalBytes) throws IOException {
+        this(partitionId, dir, segmentBytes, segmentMillis, indexIntervalBytes, null);
+    }
+
+    public Log(PartitionId partitionId, Path dir, int segmentBytes, long segmentMillis,
+               int indexIntervalBytes, RemoteStorageManager remoteStorage) throws IOException {
         this.partitionId = partitionId;
         this.dir = dir;
         this.segmentBytes = segmentBytes;
         this.segmentMillis = segmentMillis;
         this.indexIntervalBytes = indexIntervalBytes;
+        this.remoteStorage = remoteStorage;
         Files.createDirectories(dir);
         rehydrateExistingSegments();
         if (active == null) {
@@ -135,7 +145,19 @@ public final class Log implements AutoCloseable {
                 return seg.read(target);
             }
         }
-        return active.read(target);
+        Optional<RecordBatch> local = active.read(target);
+        if (local.isPresent() || remoteStorage == null) {
+            return local;
+        }
+        for (RemoteSegmentMetadata metadata : remoteSegments.values()) {
+            if (target.compareTo(metadata.baseOffset()) >= 0 && target.compareTo(metadata.nextOffset()) < 0) {
+                List<RecordBatch> batches = remoteStorage.read(metadata, target, Integer.MAX_VALUE);
+                return batches.stream()
+                    .filter(b -> target.compareTo(b.baseOffset()) >= 0 && target.compareTo(b.lastOffset()) <= 0)
+                    .findFirst();
+            }
+        }
+        return Optional.empty();
     }
 
     /**
@@ -143,6 +165,13 @@ public final class Log implements AutoCloseable {
      * across segment boundaries as needed.
      */
     public synchronized List<RecordBatch> readBatches(Offset from, int maxBytes) throws IOException {
+        if (remoteStorage != null) {
+            for (RemoteSegmentMetadata metadata : remoteSegments.values()) {
+                if (from.compareTo(metadata.baseOffset()) >= 0 && from.compareTo(metadata.nextOffset()) < 0) {
+                    return remoteStorage.read(metadata, from, maxBytes);
+                }
+            }
+        }
         List<RecordBatch> out = new ArrayList<>();
         int remaining = maxBytes;
         for (LogSegment seg : sealedSegments) {
@@ -181,6 +210,44 @@ public final class Log implements AutoCloseable {
         return sealedSegments.size();
     }
 
+    public int remoteSegmentCount() {
+        return remoteSegments.size();
+    }
+
+    public synchronized List<RemoteSegmentMetadata> remoteSegments() {
+        return List.copyOf(remoteSegments.values());
+    }
+
+    public synchronized void attachRemoteStorage(RemoteStorageManager remoteStorage) {
+        this.remoteStorage = remoteStorage;
+    }
+
+    /**
+     * Copy every sealed segment that is not already remote-backed. Metadata
+     * becomes visible only after {@code COPY_SEGMENT_FINISHED}.
+     */
+    public synchronized int offloadSealedSegments(RemoteStorageManager remoteStorage) throws IOException {
+        attachRemoteStorage(remoteStorage);
+        int copied = 0;
+        for (LogSegment seg : sealedSegments) {
+            if (remoteSegments.containsKey(seg.baseOffset())) {
+                continue;
+            }
+            RemoteSegmentMetadata metadata = remoteStorage.copySegment(
+                partitionId,
+                seg.file(),
+                seg.baseOffset(),
+                seg.nextOffset(),
+                seg.sizeBytes()
+            );
+            if (metadata.copyFinished()) {
+                remoteSegments.put(metadata.baseOffset(), metadata);
+                copied++;
+            }
+        }
+        return copied;
+    }
+
     /**
      * Drop sealed segments whose all-records' baseOffset is below
      * {@code retainFromOffset}. The active segment is never deleted.
@@ -190,7 +257,10 @@ public final class Log implements AutoCloseable {
         var it = sealedSegments.iterator();
         while (it.hasNext()) {
             LogSegment seg = it.next();
-            if (seg.nextOffset().compareTo(retainFromOffset) <= 0) {
+            RemoteSegmentMetadata metadata = remoteSegments.get(seg.baseOffset());
+            if (seg.nextOffset().compareTo(retainFromOffset) <= 0
+                && metadata != null
+                && metadata.copyFinished()) {
                 seg.close();
                 Files.deleteIfExists(seg.file());
                 it.remove();

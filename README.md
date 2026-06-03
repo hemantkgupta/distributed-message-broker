@@ -18,11 +18,11 @@ Following the canonical Apache Kafka model (NetDB 2011) updated with the
 | Module | Purpose |
 |---|---|
 | `broker-common` | Records, value types, framing primitives shared across modules. |
-| `broker-storage` | Append-only segmented logs, sparse offset index, page-cache-as-store writes. |
-| `broker-replica` | Partition replica state machine: ISR, high-watermark, leader-epoch-based truncation. |
+| `broker-storage` | Append-only segmented logs, sparse offset index, page-cache-as-store writes, filesystem-backed tiered segment offload. |
+| `broker-replica` | Partition replica state machine: ISR, high-watermark, leader-epoch-based truncation, follower HWM propagation. |
 | `broker-network` | NIO socket server, request waiting list, `FileChannel.transferTo` zero-copy fetch. |
-| `broker-coordinator` | Consumer-group coordinator: JoinGroup / SyncGroup / Heartbeat / LeaveGroup; `__consumer_offsets`. |
-| `broker-metadata` | Embedded KRaft-style metadata log: controller, snapshot, broker registration. |
+| `broker-coordinator` | Consumer-group coordinator: JoinGroup / SyncGroup / Heartbeat / LeaveGroup; `__consumer_offsets`; cooperative rebalance planner. |
+| `broker-metadata` | Embedded KRaft-style metadata log: controller, snapshot, broker registration, rack-aware closest replica selection. |
 | `broker-client` | Smart producer (batching, idempotency, retries) + pull-based consumer (offset tracking). |
 | `broker-simulator` | In-process cluster harness + chaos: network partitions, broker crashes, slow followers. |
 
@@ -46,8 +46,16 @@ is pure JDK 17.
   a `ChannelMux` simulating the network. Real socket transport exists in
   `broker-network`'s tests but the simulator harness wires brokers in-memory
   for fast deterministic test runs.
-- **No tiered storage.** Local-disk segments only; KIP-405 RemoteLogManager
-  is documented in the wiki implementation page as roadmap.
+- **Tiered storage is local-filesystem backed.** The code models KIP-405's
+  sealed-segment copy, COPY_SEGMENT_FINISHED visibility, delete-after-copy
+  invariant, and cold readback path without depending on S3/GCS SDKs.
+- **Follower fetching is rack-aware but simulator-scoped.** Metadata chooses
+  a closest in-sync replica by rack; the in-process endpoint routes reads to it.
+  There is no real inter-broker network cost model.
+- **Cooperative rebalance is a planner, not a full wire protocol.** The
+  coordinator computes sticky assignment deltas (revoked/added) so tests can
+  verify KIP-429's core property; it does not implement client-side two-round
+  callbacks.
 - **No transactions / exactly-once.** Single-partition idempotency via
   producer epochs is supported; multi-partition transactions (KIP-447) are
   out of scope.

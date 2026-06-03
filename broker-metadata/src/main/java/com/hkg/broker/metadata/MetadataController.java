@@ -123,6 +123,26 @@ public final class MetadataController {
     public synchronized Map<Integer, BrokerInfo> brokers() { return Map.copyOf(brokers); }
     public synchronized Map<PartitionId, PartitionState> partitions() { return Map.copyOf(partitions); }
 
+    /**
+     * KIP-392-style closest-replica selection: prefer an in-sync replica in
+     * the client's rack, otherwise fall back to the leader.
+     */
+    public synchronized int closestReplica(PartitionId partition, String clientRack) {
+        PartitionState state = partitions.get(partition);
+        if (state == null) {
+            throw new IllegalStateException("unknown partition " + partition);
+        }
+        if (clientRack != null) {
+            for (int replicaId : state.isr()) {
+                BrokerInfo broker = brokers.get(replicaId);
+                if (broker != null && clientRack.equals(broker.rack())) {
+                    return replicaId;
+                }
+            }
+        }
+        return state.leader();
+    }
+
     public record BrokerInfo(int id, String host, int port, String rack, boolean fenced) {
         public BrokerInfo {
             Objects.requireNonNull(host);

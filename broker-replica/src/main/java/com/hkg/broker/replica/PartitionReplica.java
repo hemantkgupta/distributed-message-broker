@@ -109,6 +109,15 @@ public final class PartitionReplica {
     public synchronized Set<Integer> isr() { return Set.copyOf(isr); }
     public synchronized Offset logEndOffset() { return log.logEndOffset(); }
 
+    public synchronized void updateHighWatermark(Offset highWatermark) {
+        if (highWatermark.compareTo(log.logEndOffset()) > 0) {
+            throw new IllegalArgumentException("HWM cannot exceed local LEO");
+        }
+        if (highWatermark.compareTo(this.highWatermark) > 0) {
+            this.highWatermark = highWatermark;
+        }
+    }
+
     public synchronized void setMinInsyncReplicas(int n) {
         if (n < 1) throw new IllegalArgumentException("min.insync.replicas must be >= 1");
         this.minInsyncReplicas = n;

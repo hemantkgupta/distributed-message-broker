@@ -5,6 +5,7 @@ import com.hkg.broker.common.Offset;
 import com.hkg.broker.common.PartitionId;
 import com.hkg.broker.common.Record;
 import com.hkg.broker.common.RecordBatch;
+import com.hkg.broker.metadata.MetadataController;
 import com.hkg.broker.replica.PartitionReplica;
 import com.hkg.broker.storage.Log;
 
@@ -24,6 +25,9 @@ import java.util.Map;
 public final class ReplicaEndpoint implements BrokerEndpoint {
 
     private final Map<PartitionId, PartitionReplica> leaders;
+    private final Map<PartitionId, Map<Integer, PartitionReplica>> replicasByPartition;
+    private final MetadataController metadataController;
+    private final String clientRack;
     private final NetworkPartitionFilter filter;
 
     public ReplicaEndpoint(Map<PartitionId, PartitionReplica> leaders) {
@@ -32,7 +36,23 @@ public final class ReplicaEndpoint implements BrokerEndpoint {
 
     public ReplicaEndpoint(Map<PartitionId, PartitionReplica> leaders, NetworkPartitionFilter filter) {
         this.leaders = leaders;
+        this.replicasByPartition = Map.of();
+        this.metadataController = null;
+        this.clientRack = null;
         this.filter = filter;
+    }
+
+    public ReplicaEndpoint(
+        Map<PartitionId, PartitionReplica> leaders,
+        Map<PartitionId, Map<Integer, PartitionReplica>> replicasByPartition,
+        MetadataController metadataController,
+        String clientRack
+    ) {
+        this.leaders = leaders;
+        this.replicasByPartition = replicasByPartition;
+        this.metadataController = metadataController;
+        this.clientRack = clientRack;
+        this.filter = new NetworkPartitionFilter();
     }
 
     @Override
@@ -53,14 +73,22 @@ public final class ReplicaEndpoint implements BrokerEndpoint {
         if (filter.isPartitionUnreachable(partition)) {
             throw new IOException("simulated network partition: " + partition);
         }
-        PartitionReplica leader = leaders.get(partition);
-        if (leader == null) {
-            throw new IOException("no leader endpoint for " + partition);
+        PartitionReplica replica = fetchReplica(partition);
+        if (replica == null) {
+            throw new IOException("no fetch endpoint for " + partition);
         }
-        return leader.fetch(from, maxBytes);
+        return replica.fetch(from, maxBytes);
     }
 
     public NetworkPartitionFilter filter() {
         return filter;
+    }
+
+    private PartitionReplica fetchReplica(PartitionId partition) {
+        if (metadataController == null) {
+            return leaders.get(partition);
+        }
+        int brokerId = metadataController.closestReplica(partition, clientRack);
+        return replicasByPartition.getOrDefault(partition, Map.of()).get(brokerId);
     }
 }

@@ -98,6 +98,29 @@ class ConsumerGroupCoordinatorTest {
     }
 
     @Test
+    void cooperative_assignment_preserves_existing_ownership() {
+        ConsumerGroupCoordinator c = new ConsumerGroupCoordinator("g", 30_000);
+        c.joinGroup("m1", null, allPartitions, 0);
+        c.joinGroup("m2", null, allPartitions, 0);
+        c.syncGroup("m1", c.defaultAssign(allPartitions));
+
+        PartitionId newPartition = new PartitionId(topic, 4);
+        ConsumerGroupCoordinator.CooperativePlan plan =
+            c.cooperativeAssign(List.of(
+                allPartitions.get(0),
+                allPartitions.get(1),
+                allPartitions.get(2),
+                allPartitions.get(3),
+                newPartition
+            ));
+
+        assertThat(plan.assignment().get("m1")).contains(allPartitions.get(0), allPartitions.get(1));
+        assertThat(plan.assignment().get("m2")).contains(allPartitions.get(2), allPartitions.get(3));
+        assertThat(plan.added().values().stream().flatMap(List::stream).toList()).containsExactly(newPartition);
+        assertThat(plan.revoked().values().stream().flatMap(List::stream).toList()).isEmpty();
+    }
+
+    @Test
     void empty_group_after_all_leave() {
         ConsumerGroupCoordinator c = new ConsumerGroupCoordinator("g", 30_000);
         c.joinGroup("m1", null, allPartitions, 0);

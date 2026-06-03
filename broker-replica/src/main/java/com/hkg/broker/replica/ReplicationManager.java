@@ -46,6 +46,7 @@ public final class ReplicationManager {
         }
         // Refresh the leader's view of our LEO now that we've applied.
         leader.onFollowerFetch(follower.brokerId(), follower.logEndOffset());
+        follower.updateHighWatermark(leader.highWatermark());
         return n;
     }
 

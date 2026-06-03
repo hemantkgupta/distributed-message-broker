@@ -77,9 +77,33 @@ class LogTest {
                 log.append(records(1, 64), LeaderEpoch.INITIAL);
             }
             int sealedBefore = log.sealedSegmentCount();
+            assertThat(log.deleteSegmentsBelow(new Offset(20))).isZero();
+            assertThat(log.sealedSegmentCount()).isEqualTo(sealedBefore);
+
+            FileSystemRemoteStorageManager remote =
+                new FileSystemRemoteStorageManager(tmp.resolve("remote"));
+            assertThat(log.offloadSealedSegments(remote)).isGreaterThan(0);
             int dropped = log.deleteSegmentsBelow(new Offset(20));
             assertThat(dropped).isGreaterThan(0);
             assertThat(log.sealedSegmentCount()).isLessThan(sealedBefore);
+        }
+    }
+
+    @Test
+    void offloaded_segment_remains_readable_after_local_delete(@TempDir Path tmp) throws IOException {
+        try (Log log = new Log(pid(), tmp.resolve("local"), /* segmentBytes */ 200, Long.MAX_VALUE, 64)) {
+            for (int i = 0; i < 30; i++) {
+                log.append(List.of(new Record(null, ("r" + i).getBytes(), 0L)), LeaderEpoch.INITIAL);
+            }
+            FileSystemRemoteStorageManager remote =
+                new FileSystemRemoteStorageManager(tmp.resolve("remote"));
+            log.offloadSealedSegments(remote);
+            log.deleteSegmentsBelow(new Offset(20));
+
+            Optional<RecordBatch> batch = log.read(new Offset(0));
+            assertThat(batch).isPresent();
+            assertThat(new String(batch.get().records().get(0).value())).isEqualTo("r0");
+            assertThat(log.remoteSegmentCount()).isGreaterThan(0);
         }
     }
 

@@ -143,4 +143,36 @@ class EndToEndTest {
             assertThat(partitionRecords).isEqualTo(2);
         }
     }
+
+    @Test
+    void follower_fetching_serves_from_nearest_in_sync_replica(@TempDir Path tmp) throws IOException {
+        try (ClusterHarness h = new ClusterHarness(tmp)
+            .withBrokers(3)
+            .createTopic("orders", 1, 3, 30_000)) {
+
+            PartitionId p0 = new PartitionId(new Topic("orders"), 0);
+            ReplicaEndpoint leaderEndpoint = new ReplicaEndpoint(h.leaders());
+            ProducerClient producer = new ProducerClient(leaderEndpoint, 4096, 0);
+            producer.send(p0, rec("local-rack-read"), 0);
+            producer.flushAll();
+            h.catchUp();
+
+            PartitionReplica nearest = h.preferredFetchReplica(p0, "rack2");
+            assertThat(nearest.brokerId()).isEqualTo(2);
+            assertThat(nearest.role()).isEqualTo(PartitionReplica.Role.FOLLOWER);
+            assertThat(nearest.highWatermark()).isEqualTo(h.leaderOf(p0).highWatermark());
+
+            ReplicaEndpoint rackAwareEndpoint = new ReplicaEndpoint(
+                h.leaders(),
+                h.replicasByPartition(),
+                h.metadataController(),
+                "rack2"
+            );
+            ConsumerClient consumer = new ConsumerClient(rackAwareEndpoint, 4096);
+            consumer.assign(p0, Offset.ZERO);
+            List<ConsumerClient.Polled> polled = consumer.poll();
+            assertThat(polled).hasSize(1);
+            assertThat(new String(polled.get(0).record().value())).isEqualTo("local-rack-read");
+        }
+    }
 }

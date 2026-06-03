@@ -28,6 +28,7 @@ public final class ClusterHarness implements AutoCloseable {
     private final MetadataController metadataController = new MetadataController();
     private final Map<PartitionId, PartitionReplica> leaders = new HashMap<>();
     private final Map<PartitionId, List<PartitionReplica>> followers = new HashMap<>();
+    private final Map<PartitionId, Map<Integer, PartitionReplica>> replicasByPartition = new HashMap<>();
     private final List<ReplicationManager> replicationManagers = new ArrayList<>();
 
     public ClusterHarness(Path dataDir) {
@@ -56,6 +57,7 @@ public final class ClusterHarness implements AutoCloseable {
             PartitionReplica leader = leaderBroker.hostReplica(
                 pid, PartitionReplica.Role.LEADER, LeaderEpoch.INITIAL, isr, replicaLagTimeMaxMs);
             leaders.put(pid, leader);
+            replicasByPartition.computeIfAbsent(pid, ignored -> new HashMap<>()).put(state.leader(), leader);
             List<PartitionReplica> partitionFollowers = new ArrayList<>();
             for (int replicaId : state.replicas()) {
                 if (replicaId == state.leader()) continue;
@@ -63,6 +65,7 @@ public final class ClusterHarness implements AutoCloseable {
                 PartitionReplica follower = followerBroker.hostReplica(
                     pid, PartitionReplica.Role.FOLLOWER, LeaderEpoch.INITIAL, isr, replicaLagTimeMaxMs);
                 partitionFollowers.add(follower);
+                replicasByPartition.computeIfAbsent(pid, ignored -> new HashMap<>()).put(replicaId, follower);
                 replicationManagers.add(new ReplicationManager(follower, leader, /* fetchMax */ 16 * 1024));
             }
             followers.put(pid, partitionFollowers);
@@ -106,6 +109,23 @@ public final class ClusterHarness implements AutoCloseable {
 
     public Map<PartitionId, PartitionReplica> leaders() {
         return Map.copyOf(leaders);
+    }
+
+    public Map<PartitionId, Map<Integer, PartitionReplica>> replicasByPartition() {
+        Map<PartitionId, Map<Integer, PartitionReplica>> out = new HashMap<>();
+        for (Map.Entry<PartitionId, Map<Integer, PartitionReplica>> e : replicasByPartition.entrySet()) {
+            out.put(e.getKey(), Map.copyOf(e.getValue()));
+        }
+        return Map.copyOf(out);
+    }
+
+    public PartitionReplica preferredFetchReplica(PartitionId partition, String clientRack) {
+        int brokerId = metadataController.closestReplica(partition, clientRack);
+        PartitionReplica replica = replicasByPartition.getOrDefault(partition, Map.of()).get(brokerId);
+        if (replica == null) {
+            throw new IllegalStateException("no replica " + brokerId + " for " + partition);
+        }
+        return replica;
     }
 
     public MetadataController metadataController() {

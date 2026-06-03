@@ -131,6 +131,80 @@ public final class ConsumerGroupCoordinator {
         return out;
     }
 
+    /**
+     * Cooperative planner that preserves existing ownership whenever the
+     * current owner is still a member. Only partitions that must move show up
+     * in the revoke/add delta maps.
+     */
+    public synchronized CooperativePlan cooperativeAssign(List<PartitionId> partitions) {
+        List<String> ids = new ArrayList<>(members.keySet());
+        Collections.sort(ids);
+        Map<String, List<PartitionId>> next = new HashMap<>();
+        Map<String, List<PartitionId>> revoked = new HashMap<>();
+        Map<String, List<PartitionId>> added = new HashMap<>();
+        for (String id : ids) {
+            next.put(id, new ArrayList<>());
+            revoked.put(id, new ArrayList<>());
+            added.put(id, new ArrayList<>());
+        }
+        if (ids.isEmpty()) {
+            return new CooperativePlan(Map.of(), Map.of(), Map.of());
+        }
+
+        Map<PartitionId, String> previousOwner = new HashMap<>();
+        for (Map.Entry<String, List<PartitionId>> e : assignment.entrySet()) {
+            if (!members.containsKey(e.getKey())) continue;
+            for (PartitionId p : e.getValue()) {
+                previousOwner.put(p, e.getKey());
+            }
+        }
+
+        int n = partitions.size();
+        int m = ids.size();
+        int basePer = n / m;
+        int remainder = n % m;
+        Map<String, Integer> targetSizes = new HashMap<>();
+        for (int i = 0; i < ids.size(); i++) {
+            targetSizes.put(ids.get(i), basePer + (i < remainder ? 1 : 0));
+        }
+
+        List<PartitionId> unassigned = new ArrayList<>();
+        for (PartitionId p : partitions) {
+            String owner = previousOwner.get(p);
+            if (owner != null && next.get(owner).size() < targetSizes.get(owner)) {
+                next.get(owner).add(p);
+            } else {
+                unassigned.add(p);
+            }
+        }
+        for (PartitionId p : unassigned) {
+            String target = ids.stream()
+                .filter(id -> next.get(id).size() < targetSizes.get(id))
+                .findFirst()
+                .orElse(ids.get(ids.size() - 1));
+            next.get(target).add(p);
+        }
+
+        for (String id : ids) {
+            List<PartitionId> old = assignment.getOrDefault(id, List.of());
+            for (PartitionId p : old) {
+                if (!next.get(id).contains(p)) revoked.get(id).add(p);
+            }
+            for (PartitionId p : next.get(id)) {
+                if (!old.contains(p)) added.get(id).add(p);
+            }
+        }
+        return new CooperativePlan(freeze(next), freeze(revoked), freeze(added));
+    }
+
+    private static Map<String, List<PartitionId>> freeze(Map<String, List<PartitionId>> in) {
+        Map<String, List<PartitionId>> out = new HashMap<>();
+        for (Map.Entry<String, List<PartitionId>> e : in.entrySet()) {
+            out.put(e.getKey(), List.copyOf(e.getValue()));
+        }
+        return out;
+    }
+
     public synchronized List<PartitionId> assignmentFor(String memberId) {
         return assignment.getOrDefault(memberId, List.of());
     }
@@ -196,6 +270,11 @@ public final class ConsumerGroupCoordinator {
 
     public record JoinResult(int generation, String memberId, String leaderId, List<PartitionId> assignment) {}
     public record SyncResult(int generation, Map<String, List<PartitionId>> assignment) {}
+    public record CooperativePlan(
+        Map<String, List<PartitionId>> assignment,
+        Map<String, List<PartitionId>> revoked,
+        Map<String, List<PartitionId>> added
+    ) {}
 
     private static final class Member {
         private final String id;
